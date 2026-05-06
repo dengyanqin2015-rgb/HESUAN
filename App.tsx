@@ -92,13 +92,21 @@ self.onmessage = function(e) {
                 });
             }
 
+            var normalize = function(val) {
+                if (val === null || val === undefined) return '';
+                return String(val)
+                    .replace(/[\s\uFEFF\xA0]+/g, ' ') 
+                    .trim()
+                    .toLowerCase();
+            };
+
             var checkRow = function(row, filters, forTable) {
                 if (!filters || filters.length === 0) return true;
                 
                 var checkCondition = function(filter) {
                     var cellValue = row[filter.column] === null || row[filter.column] === undefined ? '' : String(row[filter.column]);
-                    var cellValueStr = cellValue.trim().toLowerCase();
-                    var filterValueStr = String(filter.value || '').trim().toLowerCase();
+                    var cellValueStr = normalize(cellValue);
+                    var filterValueStr = normalize(filter.value || '');
                     switch (filter.operator) {
                         case 'contains': return cellValueStr.indexOf(filterValueStr) !== -1;
                         case 'not_contains': return cellValueStr.indexOf(filterValueStr) === -1;
@@ -135,8 +143,22 @@ self.onmessage = function(e) {
                 }
             }
 
+            var maxRetries = 10;
+            var currentRetry = 0;
+            var previousDataSnapshot = JSON.stringify(processedData);
+
             var processRulesSequentially = function(ruleIndex) {
                 if (ruleIndex >= activeRuleGroups.length) {
+                    var currentDataSnapshot = JSON.stringify(processedData);
+                    if (currentDataSnapshot !== previousDataSnapshot && currentRetry < maxRetries) {
+                        currentRetry++;
+                        previousDataSnapshot = currentDataSnapshot;
+                        self.postMessage({ type: 'APPLY_RULES_PROGRESS', payload: { progress: 1, message: '数据发生变化，进行第 ' + currentRetry + ' 次重试核算...' } });
+                        setTimeout(function() {
+                            processRulesSequentially(0);
+                        }, 50);
+                        return;
+                    }
                     self.postMessage({ type: 'APPLY_RULES_SUCCESS', payload: { processedData: processedData } });
                     return;
                 }
@@ -173,7 +195,7 @@ self.onmessage = function(e) {
                     
                     if (totalAmount !== undefined) {
                         var matchingRows = processedData.filter(function(row) { return checkRow(row, group.filters, mainTable); });
-                        var amount = matchingRows.length > 0 ? parseFloat((totalAmount / matchingRows.length).toFixed(2)) : 0;
+                        var amount = matchingRows.length > 0 ? parseFloat((totalAmount / matchingRows.length).toFixed(3)) : 0;
                         processedData.forEach(function(row) { if (checkRow(row, group.filters, mainTable)) { row[action.newColumnName] = amount; } });
                     }
                     processRulesSequentially(ruleIndex + 1);
@@ -208,8 +230,8 @@ self.onmessage = function(e) {
                                     var currentConditionResult = false;
                                     
                                     if (mainVal !== null && mainVal !== undefined && sourceVal !== null && sourceVal !== undefined) {
-                                        var mainStr = String(mainVal).trim().toLowerCase();
-                                        var sourceStr = String(sourceVal).trim().toLowerCase();
+                                        var mainStr = normalize(mainVal);
+                                        var sourceStr = normalize(sourceVal);
                                         
                                         if (match.operator === 'equals') {
                                             currentConditionResult = mainStr === sourceStr;
@@ -324,11 +346,11 @@ self.onmessage = function(e) {
                         if (checkRow(row, group.filters, mainTable)) {
                             var mainTableValue = row[config.mainSearchColumn];
                             if (mainTableValue !== null && mainTableValue !== undefined) {
-                                var normalizedMainTableValue = String(mainTableValue).trim();
+                                var normalizedMainTableValue = normalize(mainTableValue);
                                 
                                 for (var i = 0; i < sourceMatchData.length; i++) {
                                     var sourceItem = sourceMatchData[i];
-                                    var normalizedSourceMatchValue = String(sourceItem.matchValue).trim();
+                                    var normalizedSourceMatchValue = normalize(sourceItem.matchValue);
                                     
                                     var isMatch = false;
                                     if (matchDirection === 'source_contains_main') {
@@ -395,7 +417,8 @@ self.onmessage = function(e) {
                                     }
                                 }
                                 
-                                row[action.newColumnName] = isFinite(result) ? result : 0;
+                                var numResult = isFinite(result) ? result : 0;
+                                row[action.newColumnName] = parseFloat(numResult.toFixed(3));
                             } catch (err) {
                                 console.error('Calculation error for rule "' + group.name + '":', err);
                                 row[action.newColumnName] = 'CALC_ERROR';
@@ -586,12 +609,14 @@ const App: React.FC = () => {
             break;
         case 'APPLY_RULES_SUCCESS':
             const processedData = payload.processedData;
+            let finalHeaders = processedData.length > 0 ? Object.keys(processedData[0]) : tables[0].headers;
             setTables(prevTables => prevTables.map((t, index) => {
                 if (index === 0) { // Always applies to main table
-                    return { ...t, data: processedData, headers: processedData.length > 0 ? Object.keys(processedData[0]) : t.headers };
+                    return { ...t, data: processedData, headers: finalHeaders };
                 }
                 return t;
             }));
+            setRuleGroups(prevRules => validateRuleGroups(prevRules, finalHeaders));
             setActiveView('table');
             setIsLoading(false);
             break;
@@ -1288,16 +1313,93 @@ const App: React.FC = () => {
 
   const validateRuleGroups = (rules: RuleGroup[], currentHeaders: string[]): RuleGroup[] => {
       const columns = new Set(currentHeaders);
-      return rules.map(group => {
-          let validationError: string | null = null;
-          for (const filter of group.filters) {
-              if (filter.column && !columns.has(filter.column)) {
-                  validationError = `列 "${filter.column}" 在主表中不存在。`;
-                  break;
+      
+      // Sweep multiple times to resolve out-of-order dependencies, up to a reasonable limit
+      let maxIterations = rules.length + 1;
+      let iteration = 0;
+      let rulesState = [...rules];
+      
+      while (iteration < maxIterations) {
+          let anyChanged = false;
+          let currentIterationValidIds = new Set<string>();
+          
+          for (let i = 0; i < rulesState.length; i++) {
+              const group = rulesState[i];
+              let validationError: string | null = null;
+              
+              for (const filter of group.filters) {
+                  if (filter.column && !columns.has(filter.column)) {
+                      validationError = `列 "${filter.column}" 在主表中不存在。`;
+                      break;
+                  }
               }
+              
+              // We also need to check source columns depending on the action type
+              if (!validationError && group.action.type === 'cross_column_calculation') {
+                  const config = group.action.crossColumnCalculationConfig;
+                  if (config && config.parts) {
+                      for (const part of config.parts) {
+                          if (part.columnName && !columns.has(part.columnName)) {
+                              validationError = `列 "${part.columnName}" 在跨列计算中不存在。`;
+                              break;
+                          }
+                      }
+                  }
+              }
+              if (!validationError && group.action.type === 'count_duplicates') {
+                  if (group.action.countDuplicatesConfig?.sourceColumn && !columns.has(group.action.countDuplicatesConfig.sourceColumn)) {
+                      validationError = `列 "${group.action.countDuplicatesConfig.sourceColumn}" 在重复列统计中不存在。`;
+                  }
+              }
+              if (!validationError && group.action.type === 'multi_match') {
+                  if (group.action.multiMatchConfig?.rules) {
+                      for (const rule of group.action.multiMatchConfig.rules) {
+                          for (const cond of rule.conditions) {
+                              if (cond.column && !columns.has(cond.column)) {
+                                  validationError = `列 "${cond.column}" 在多维匹配条件中不存在。`;
+                                  break;
+                              }
+                          }
+                          if (validationError) break;
+                          if (rule.sourceColumn && !columns.has(rule.sourceColumn)) {
+                              validationError = `列 "${rule.sourceColumn}" 在多维匹配取值列中不存在。`;
+                              break;
+                          }
+                      }
+                  }
+              }
+              if (!validationError && group.action.type === 'lookup_value') {
+                  if (group.action.lookupConfig?.matches) {
+                      for (const match of group.action.lookupConfig.matches) {
+                          if (match.mainColumn && !columns.has(match.mainColumn)) {
+                              validationError = `列 "${match.mainColumn}" 在查询匹配条件中不存在。`;
+                              break;
+                          }
+                      }
+                  }
+              }
+              if (!validationError && group.action.type === 'inclusion_match') {
+                  if (group.action.inclusionMatchConfig?.mainSearchColumn && !columns.has(group.action.inclusionMatchConfig.mainSearchColumn)) {
+                      validationError = `列 "${group.action.inclusionMatchConfig.mainSearchColumn}" 在包含匹配条件中不存在。`;
+                  }
+              }
+
+              if (!validationError) {
+                  currentIterationValidIds.add(group.id);
+                  if (group.action.newColumnName && !columns.has(group.action.newColumnName)) {
+                      columns.add(group.action.newColumnName);
+                      anyChanged = true;
+                  }
+              }
+              
+              rulesState[i] = { ...group, validationError, enabled: !validationError ? true : false, isCollapsed: group.isCollapsed ?? true };
           }
-          return { ...group, enabled: !validationError, validationError, isCollapsed: group.isCollapsed ?? true };
-      });
+          
+          if (!anyChanged) break;
+          iteration++;
+      }
+      
+      return rulesState;
   };
 
   const handleFileUpload = useCallback((file: File, tableId: string) => {
@@ -1319,17 +1421,77 @@ const App: React.FC = () => {
   const handleFileDownload = useCallback((table: Table) => {
     if (table.data.length === 0) { setError('没有数据可供下载。'); return; }
     try {
-        const dataInOrder = table.data.map(row => {
-          const orderedRow: TableRow = {};
-          table.headers.forEach(header => {
-            orderedRow[header] = row[header];
-          });
-          return orderedRow;
-        });
-        const worksheet = XLSX.utils.json_to_sheet(dataInOrder, { header: table.headers });
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
-        XLSX.writeFile(workbook, `${table.name}_processed.xlsx`);
+        if (table.data.length > 50000) {
+            const BOM = '\uFEFF';
+            const chunks: string[] = [BOM, table.headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(',') + '\n'];
+            
+            let currentChunk = '';
+            table.data.forEach((row, index) => {
+                const rowData = table.headers.map(header => {
+                    let cellData = row[header];
+                    if (cellData === null || cellData === undefined) return '';
+                    
+                    if (typeof cellData === 'string' && cellData.trim() !== '') {
+                        const trimmed = cellData.trim();
+                        if (!/^0\d+/.test(trimmed) && trimmed.length < 15) {
+                            const numParsed = Number(trimmed);
+                            if (!isNaN(numParsed) && String(numParsed) !== "Infinity" && String(numParsed) !== "-Infinity") {
+                                cellData = numParsed;
+                            }
+                        }
+                    }
+                    
+                    let cellStr = String(cellData);
+                    if (/[,"\n\r]/.test(cellStr)) {
+                        cellStr = `"${cellStr.replace(/"/g, '""')}"`;
+                    }
+                    return cellStr;
+                });
+                currentChunk += rowData.join(',') + '\n';
+                
+                // Push in batches to prevent huge string accumulation
+                if (index % 10000 === 0) {
+                    chunks.push(currentChunk);
+                    currentChunk = '';
+                }
+            });
+            if (currentChunk) chunks.push(currentChunk);
+
+            const blob = new Blob(chunks, { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${table.name}_processed.csv`;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        } else {
+            const dataInOrder = table.data.map(row => {
+              const orderedRow: TableRow = {};
+              table.headers.forEach(header => {
+                let val = row[header];
+                if (typeof val === 'string' && val.trim() !== '') {
+                    const trimmed = val.trim();
+                    // Don't convert strings that look like IDs (start with 0, or very long numbers)
+                    // But convert standard numbers, negatives, floats.
+                    if (!/^0\d+/.test(trimmed) && trimmed.length < 15) {
+                        const numParsed = Number(trimmed);
+                        if (!isNaN(numParsed) && String(numParsed) !== "Infinity" && String(numParsed) !== "-Infinity") {
+                            val = numParsed;
+                        }
+                    }
+                }
+                orderedRow[header] = val;
+              });
+              return orderedRow;
+            });
+            const worksheet = XLSX.utils.json_to_sheet(dataInOrder, { header: table.headers });
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+            XLSX.writeFile(workbook, `${table.name}_processed.xlsx`);
+        }
     } catch (err) {
         setError(`创建文件时出错: ${err instanceof Error ? err.message : '未知错误'}`);
     }
