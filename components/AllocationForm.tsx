@@ -2,7 +2,7 @@
 // FIX: Import useEffect hook from React.
 import React, { useMemo, useCallback, useState, useEffect } from 'react';
 import { RuleGroup, FilterCondition, FilterOperator, ActionType, AllocationAction, RuleCategory, Table, TableRow, LookupValueConfig, MultiMatchRule, MultiMatchConfig, InclusionMatchConfig, CrossColumnCalculationConfig, CrossColumnCalculationPart } from '../types';
-import { Filter, PlusCircle, Trash2, ListChecks, DollarSign, Type, CheckSquare, Calculator, Layers, AlertCircle, ChevronDown, Sparkles, Copy, XCircle, Folder, FolderPlus, ChevronsDownUp, DatabaseZap, GitMerge, GripVertical } from 'lucide-react';
+import { Filter, PlusCircle, Trash2, ListChecks, DollarSign, Type, CheckSquare, Calculator, Layers, AlertCircle, ChevronDown, Sparkles, Copy, XCircle, Folder, FolderPlus, ChevronsDownUp, DatabaseZap, GitMerge, GripVertical, List } from 'lucide-react';
 
 interface AllocationFormProps {
   tables: Table[];
@@ -702,7 +702,10 @@ const AllocationForm: React.FC<AllocationFormProps> = ({ tables, ruleGroups, rul
         if (group.action.sourceType === 'cell' && isCellValueSourceInvalid(group.action.cellSource)) return true;
     }
     if (group.action.type === 'fill_text' && !(group.action.fillText || '').trim()) return true;
-    if (group.action.type === 'ai_formula' && !(group.action.aiPrompt || '').trim()) return true;
+    if (group.action.type === 'group_sum') {
+        const config = group.action.groupSumConfig;
+        if (!config || !config.groupByColumn || !config.sumColumn) return true;
+    }
     if (group.action.type === 'lookup_value') {
         const config = group.action.lookupConfig;
         if (!config || !config.sourceTableId || !config.matches || config.matches.length === 0 || config.matches.some(m => !m.mainColumn || !m.sourceValue) || !config.sourceValueColumn) return true;
@@ -1215,7 +1218,7 @@ const AllocationForm: React.FC<AllocationFormProps> = ({ tables, ruleGroups, rul
                     </div>
                 </div>
                 </fieldset>
-                <fieldset className="border border-gray-200 dark:border-gray-600 rounded-md p-3"><legend className="px-2 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center"><ListChecks className="w-4 h-4 mr-2" /> 执行操作</legend><div className="space-y-4 mt-2"><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label className="mb-1 text-xs font-medium text-gray-700 dark:text-gray-300 flex items-center"><CheckSquare className="w-4 h-4 mr-1" /> 操作类型</label><div className="flex flex-wrap items-center gap-1 rounded-lg bg-gray-200 dark:bg-gray-900 p-1 w-full text-center"><button type="button" onClick={() => handleActionChange(group.id, 'type', 'distribute_amount')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'distribute_amount' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>平摊金额</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'fill_text')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'fill_text' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>填充文本</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'lookup_value')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'lookup_value' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>查询匹配</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'inclusion_match')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'inclusion_match' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>包含匹配</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'multi_match')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'multi_match' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>多维匹配</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'count_duplicates')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'count_duplicates' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>列重复统计</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'cross_column_calculation')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'cross_column_calculation' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>跨列计算</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'ai_formula')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'ai_formula' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>AI 公式</button></div></div><div><label htmlFor={`target-column-${group.id}`} className="flex items-center mb-1 text-xs font-medium text-gray-700 dark:text-gray-300"><Type className="w-4 h-4 mr-1" /> 目标列</label><input type="text" id={`target-column-${group.id}`} list={`headers-list-${group.id}`} value={group.action.newColumnName} onChange={e => handleActionChange(group.id, 'newColumnName', e.target.value)} placeholder="选择或新建列名" required className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 text-sm rounded-lg block w-full p-2" /><datalist id={`headers-list-${group.id}`}>{mainTableHeaders.map(h => <option key={h} value={h} />)}</datalist></div></div>
+                <fieldset className="border border-gray-200 dark:border-gray-600 rounded-md p-3"><legend className="px-2 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center"><ListChecks className="w-4 h-4 mr-2" /> 执行操作</legend><div className="space-y-4 mt-2"><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label className="mb-1 text-xs font-medium text-gray-700 dark:text-gray-300 flex items-center"><CheckSquare className="w-4 h-4 mr-1" /> 操作类型</label><div className="flex flex-wrap items-center gap-1 rounded-lg bg-gray-200 dark:bg-gray-900 p-1 w-full text-center"><button type="button" onClick={() => handleActionChange(group.id, 'type', 'distribute_amount')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'distribute_amount' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>平摊金额</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'fill_text')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'fill_text' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>填充文本</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'lookup_value')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'lookup_value' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>查询匹配</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'inclusion_match')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'inclusion_match' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>包含匹配</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'multi_match')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'multi_match' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>多维匹配</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'count_duplicates')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'count_duplicates' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>列重复统计</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'cross_column_calculation')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'cross_column_calculation' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>跨列计算</button><button type="button" onClick={() => handleActionChange(group.id, 'type', 'group_sum')} className={`flex-1 rounded-md py-1.5 px-2 text-xs font-medium ${group.action.type === 'group_sum' ? 'bg-white dark:bg-gray-700 text-blue-600 shadow' : 'hover:bg-white/50'}`}>分组求和</button></div></div><div><label htmlFor={`target-column-${group.id}`} className="flex items-center mb-1 text-xs font-medium text-gray-700 dark:text-gray-300"><Type className="w-4 h-4 mr-1" /> 目标列</label><input type="text" id={`target-column-${group.id}`} list={`headers-list-${group.id}`} value={group.action.newColumnName} onChange={e => handleActionChange(group.id, 'newColumnName', e.target.value)} placeholder="选择或新建列名" required className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 text-sm rounded-lg block w-full p-2" /><datalist id={`headers-list-${group.id}`}>{mainTableHeaders.map(h => <option key={h} value={h} />)}</datalist></div></div>
                 {group.action.type === 'distribute_amount' && (<div>
                      <label className="flex items-center mb-1 text-xs font-medium text-gray-700 dark:text-gray-300"><DollarSign className="w-4 h-4 mr-1" /> 总金额来源</label>
                      <div className="flex items-center space-x-1 rounded-lg bg-gray-200 dark:bg-gray-900 p-1 w-full text-center">
@@ -1300,7 +1303,45 @@ const AllocationForm: React.FC<AllocationFormProps> = ({ tables, ruleGroups, rul
                         />
                     </div>
                 )}
-                {group.action.type === 'ai_formula' && (<div><label htmlFor={`ai-prompt-${group.id}`} className="flex items-center mb-1 text-xs font-medium text-gray-700 dark:text-gray-300"><Sparkles className="w-4 h-4 mr-1" /> 输入 AI 处理指令</label><textarea id={`ai-prompt-${group.id}`} value={group.action.aiPrompt || ''} onChange={e => handleActionChange(group.id, 'aiPrompt', e.target.value)} placeholder="例如: 将 '列A' 和 '列B' 的内容合并，并用逗号分隔" required rows={3} className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 text-sm rounded-lg block w-full p-2" /><p className="mt-1 text-xs text-gray-500 dark:text-gray-400">注意: AI 公式会对每批符合条件的行进行处理，可能会产生费用并增加处理时间。</p></div>)}
+                {group.action.type === 'group_sum' && (
+                  <div className="space-y-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
+                      <div>
+                          <label className="flex items-center mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">
+                              <List className="w-4 h-4 mr-1" /> 分组列 (如: 内部订单号)
+                          </label>
+                          <select 
+                              value={group.action.groupSumConfig?.groupByColumn || ''} 
+                              onChange={e => {
+                                  const config = group.action.groupSumConfig || { groupByColumn: '', sumColumn: '' };
+                                  handleActionChange(group.id, 'groupSumConfig', { ...config, groupByColumn: e.target.value });
+                              }} 
+                              required 
+                              className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 text-sm rounded-lg block w-full p-2"
+                          >
+                              <option value="">-- 选择列 --</option>
+                              {mainTableHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                      </div>
+                      <div>
+                          <label className="flex items-center mb-1 text-xs font-medium text-gray-700 dark:text-gray-300">
+                              <Calculator className="w-4 h-4 mr-1" /> 求和列 (如: 成本价)
+                          </label>
+                          <select 
+                              value={group.action.groupSumConfig?.sumColumn || ''} 
+                              onChange={e => {
+                                  const config = group.action.groupSumConfig || { groupByColumn: '', sumColumn: '' };
+                                  handleActionChange(group.id, 'groupSumConfig', { ...config, sumColumn: e.target.value });
+                              }} 
+                              required 
+                              className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 text-sm rounded-lg block w-full p-2"
+                          >
+                              <option value="">-- 选择列 --</option>
+                              {mainTableHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">注意: 此操作会将包含相同分组列值的所有的行的求和列值相加，并将结果输出到目标列。</p>
+                  </div>
+                )}
                 </div></fieldset>
             </div>
             )}

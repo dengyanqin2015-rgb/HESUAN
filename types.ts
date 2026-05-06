@@ -21,7 +21,7 @@ export interface FilterCondition {
   logic?: 'and' | 'or'; // Logic operator connecting THIS condition to the PREVIOUS one
 }
 
-export type ActionType = 'distribute_amount' | 'fill_text' | 'ai_formula' | 'lookup_value' | 'count_duplicates' | 'multi_match' | 'inclusion_match' | 'cross_column_calculation';
+export type ActionType = 'distribute_amount' | 'fill_text' | 'group_sum' | 'lookup_value' | 'count_duplicates' | 'multi_match' | 'inclusion_match' | 'cross_column_calculation';
 
 export interface CellValueSource {
     tableId: string;
@@ -91,8 +91,11 @@ export interface AllocationAction {
   cellSource?: CellValueSource;
   // for fill_text
   fillText?: string;
-  // for ai_formula
-  aiPrompt?: string;
+  // for group_sum
+  groupSumConfig?: {
+    groupByColumn: string;
+    sumColumn: string;
+  };
   // for lookup_value
   lookupConfig?: LookupValueConfig;
   // for count_duplicates

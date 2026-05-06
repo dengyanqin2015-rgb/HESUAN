@@ -132,16 +132,6 @@ self.onmessage = function(e) {
             };
             
             var ai = null;
-            var hasAiRules = activeRuleGroups.some(function(g) { return g.action.type === 'ai_formula'; });
-            if (hasAiRules && apiKey) {
-                try {
-                    self.importScripts('https://aistudiocdn.com/@google/genai');
-                    ai = new self.GoogleGenAI({ apiKey: apiKey });
-                } catch(err) {
-                    self.postMessage({ type: 'ERROR', error: '加载 AI 模块失败: ' + err.message + '. 可能需要更新 AI 库。' });
-                    return;
-                }
-            }
 
             var maxRetries = 10;
             var currentRetry = 0;
@@ -426,66 +416,36 @@ self.onmessage = function(e) {
                         }
                     });
                     processRulesSequentially(ruleIndex + 1);
-                } else if (action.type === 'ai_formula') {
-                    if (!ai) {
-                        self.postMessage({ type: 'APPLY_RULES_PROGRESS', payload: { ...progressPayload, message: '跳过 AI 规则 (未提供 API Key): ' + group.name } });
+                } else if (action.type === 'group_sum') {
+                    var sumConfig = action.groupSumConfig;
+                    if (!sumConfig || !sumConfig.groupByColumn || !sumConfig.sumColumn) {
+                        console.error('Rule "' + group.name + '": Group sum config is incomplete.');
                         processRulesSequentially(ruleIndex + 1);
                         return;
                     }
-
-                    var matchingRows = [];
-                    var matchingRowsIndices = [];
-                    processedData.forEach(function(row, index) {
+                    var sums = {};
+                    processedData.forEach(function(r) {
+                        var groupVal = r[sumConfig.groupByColumn];
+                        if (groupVal !== undefined && groupVal !== null) {
+                            var sumVal = parseFloat(r[sumConfig.sumColumn]);
+                            if (isNaN(sumVal)) sumVal = 0;
+                            var key = String(groupVal).trim();
+                            if (!sums[key]) sums[key] = 0;
+                            sums[key] += sumVal;
+                        }
+                    });
+                    processedData.forEach(function(row) {
                         if (checkRow(row, group.filters, mainTable)) {
-                            matchingRows.push(row);
-                            matchingRowsIndices.push(index);
+                            var groupVal = row[sumConfig.groupByColumn];
+                            if (groupVal !== undefined && groupVal !== null) {
+                                var key = String(groupVal).trim();
+                                row[action.newColumnName] = parseFloat((sums[key] || 0).toFixed(3));
+                            } else {
+                                row[action.newColumnName] = 0;
+                            }
                         }
                     });
-
-                    if (matchingRows.length === 0) {
-                        processRulesSequentially(ruleIndex + 1);
-                        return;
-                    }
-
-                    var prompt = 'For each JSON object in the following array, apply this instruction: "' + action.aiPrompt + '". Return a valid JSON array of strings or numbers with the results, one for each object. The output array must have the same number of elements as the input array. Only return the JSON array, with no other text or markdown.\\n\\n' + JSON.stringify(matchingRows);
-
-                    ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        contents: prompt,
-                    })
-                    .then(function(result) {
-                        var text = result.text;
-                        if (!text) {
-                            throw new Error('AI returned an empty response.');
-                        }
-                        text = text.trim();
-                        var jsonArray;
-                        try {
-                            var jsonString = text.replace(/^\\\`\\\`\\\`json\\s*|\\\`\\\`\\\`\\s*$/g, '');
-                            jsonArray = JSON.parse(jsonString);
-                            if (!Array.isArray(jsonArray) || jsonArray.length !== matchingRows.length) {
-                                throw new Error('AI returned an array with ' + (jsonArray.length || 'unknown') + ' elements, expected ' + matchingRows.length + '.');
-                            }
-                        } catch (err) {
-                            console.error("AI Response parsing error:", err, "Raw response:", text);
-                            jsonArray = new Array(matchingRows.length).fill('AI_PARSE_ERROR: ' + err.message);
-                        }
-
-                        jsonArray.forEach(function(res, index) {
-                            if (matchingRowsIndices[index] !== undefined) {
-                                processedData[matchingRowsIndices[index]][action.newColumnName] = res;
-                            }
-                        });
-                    })
-                    .catch(function(err) {
-                        console.error("Gemini API error:", err);
-                        matchingRowsIndices.forEach(function(idx) {
-                            processedData[idx][action.newColumnName] = 'API_ERROR';
-                        });
-                    })
-                    .finally(function() {
-                        processRulesSequentially(ruleIndex + 1);
-                    });
+                    processRulesSequentially(ruleIndex + 1);
                 } else {
                     processRulesSequentially(ruleIndex + 1);
                 }
@@ -777,7 +737,7 @@ const App: React.FC = () => {
     }
     try {
       const operatorMapReverse: Record<FilterCondition['operator'], string> = { contains: '包含', not_contains: '不包含', equals: '等于', not_equals: '不等于', is_empty: '为空', is_not_empty: '不为空' };
-      const actionMapReverse: Record<string, string> = { distribute_amount: '平摊金额', fill_text: '填充文本', ai_formula: 'AI 公式', lookup_value: '查询匹配', count_duplicates: '列重复统计', multi_match: '多维匹配', inclusion_match: '包含匹配', cross_column_calculation: '跨列计算' };
+      const actionMapReverse: Record<string, string> = { distribute_amount: '平摊金额', fill_text: '填充文本', group_sum: '分组求和', lookup_value: '查询匹配', count_duplicates: '列重复统计', multi_match: '多维匹配', inclusion_match: '包含匹配', cross_column_calculation: '跨列计算' };
 
       const xlsxHeaders = ["分类名称", "规则组名称", "筛选列", "筛选操作", "筛选值", "与上一条的逻辑", "操作类型", "目标列", "操作值", "金额来源类型", "金额来源表", "金额来源列", "金额来源筛选条件"];
       const rows: (string|number)[][] = [xlsxHeaders];
@@ -823,8 +783,9 @@ const App: React.FC = () => {
             if (action.type === 'fill_text') {
                 return [...baseActionData, action.fillText || '', '', '', '', ''];
             }
-            if (action.type === 'ai_formula') {
-                return [...baseActionData, action.aiPrompt || '', '', '', '', ''];
+            if (action.type === 'group_sum' && action.groupSumConfig) {
+                 const opValue = `分组列:[${action.groupSumConfig.groupByColumn}]; 求和列:[${action.groupSumConfig.sumColumn}]`;
+                 return [...baseActionData, opValue, '', '', '', ''];
             }
             if (action.type === 'lookup_value' && action.lookupConfig) {
                  const sourceTable = tables.find(t => t.id === action.lookupConfig.sourceTableId);
@@ -1032,7 +993,7 @@ const App: React.FC = () => {
         if (jsonData.length === 0) throw new Error("模板文件为空。");
 
         const operatorMap: Record<string, FilterCondition['operator']> = { '包含': 'contains', '不包含': 'not_contains', '等于': 'equals', '不等于': 'not_equals', '为空': 'is_empty', '不为空': 'is_not_empty' };
-        const actionMap: Record<string, RuleGroup['action']['type']> = { '平摊金额': 'distribute_amount', '填充文本': 'fill_text', 'AI 公式': 'ai_formula', '查询匹配': 'lookup_value', '列重复统计': 'count_duplicates', '多维匹配': 'multi_match', '包含匹配': 'inclusion_match', '跨列计算': 'cross_column_calculation' };
+        const actionMap: Record<string, RuleGroup['action']['type']> = { '平摊金额': 'distribute_amount', '填充文本': 'fill_text', '分组求和': 'group_sum', '查询匹配': 'lookup_value', '列重复统计': 'count_duplicates', '多维匹配': 'multi_match', '包含匹配': 'inclusion_match', '跨列计算': 'cross_column_calculation' };
         const operatorMapReverse: Record<FilterCondition['operator'], string> = { contains: '包含', not_contains: '不包含', equals: '等于', not_equals: '不等于', is_empty: '为空', is_not_empty: '不为空' };
 
 
@@ -1121,8 +1082,15 @@ const App: React.FC = () => {
                 }
             } else if (actionType === 'fill_text') {
                 newAction.fillText = opValue !== undefined ? String(opValue) : undefined;
-            } else if (actionType === 'ai_formula') {
-                newAction.aiPrompt = opValue !== undefined ? String(opValue) : undefined;
+            } else if (actionType === 'group_sum') {
+                const regex = /分组列:\[(.*?)]; 求和列:\[(.*?)]/;
+                const match = String(opValue).match(regex);
+                if (match) {
+                    newAction.groupSumConfig = {
+                        groupByColumn: match[1].trim(),
+                        sumColumn: match[2].trim()
+                    };
+                }
             } else if (actionType === 'count_duplicates') {
                 newAction.countDuplicatesConfig = {
                     sourceColumn: opValue !== undefined ? String(opValue) : '',
@@ -1344,6 +1312,15 @@ const App: React.FC = () => {
                               break;
                           }
                       }
+                  }
+              }
+              if (!validationError && group.action.type === 'group_sum') {
+                  const config = group.action.groupSumConfig;
+                  if (config && config.groupByColumn && !columns.has(config.groupByColumn)) {
+                      validationError = `列 "${config.groupByColumn}" 在分组求和的分组列中不存在。`;
+                  }
+                  if (!validationError && config && config.sumColumn && !columns.has(config.sumColumn)) {
+                      validationError = `列 "${config.sumColumn}" 在分组求和的求和列中不存在。`;
                   }
               }
               if (!validationError && group.action.type === 'count_duplicates') {
