@@ -260,12 +260,14 @@ self.onmessage = function(e) {
                     var sourceColumn = config.sourceColumn;
                     var valueCounts = new Map();
 
-                    // First pass: count all values in the source column across the entire dataset
+                    // First pass: count all values in the source column for rows matching the filter
                     processedData.forEach(function(row) {
-                        var value = row[sourceColumn];
-                        if (value !== null && value !== undefined) {
-                            var normalizedValue = String(value).trim().toLowerCase();
-                            valueCounts.set(normalizedValue, (valueCounts.get(normalizedValue) || 0) + 1);
+                        if (checkRow(row, group.filters, mainTable)) {
+                            var value = row[sourceColumn];
+                            if (value !== null && value !== undefined) {
+                                var normalizedValue = String(value).trim().toLowerCase();
+                                valueCounts.set(normalizedValue, (valueCounts.get(normalizedValue) || 0) + 1);
+                            }
                         }
                     });
                     
